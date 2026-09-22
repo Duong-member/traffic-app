@@ -3,17 +3,17 @@ from ultralytics import YOLO
 # Load model
 model = YOLO("models/best.pt")
 
-# Ảnh biển 50
-IMAGE_PATH = r"C:\Users\nguye\Downloads\bien50.jpg"
+# Ảnh biển 80
+IMAGE_PATH = r"test_images\bien80-crop.jpg"
 
 print("\n==============================")
 print("MODEL CLASSES")
 print("==============================")
 
-print("Class 51 =", model.names[51])
+print("Class 53 =", model.names[53])
 
 print("\n==============================")
-print("TEST BIEN 50")
+print("TEST BIEN 80")
 print("==============================")
 
 results = model.predict(
