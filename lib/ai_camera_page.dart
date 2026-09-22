@@ -3,8 +3,11 @@ import 'dart:convert';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
+
+import 'services/history_service.dart';
 
 class AiCameraPage extends StatefulWidget {
   const AiCameraPage({super.key});
@@ -35,6 +38,23 @@ class _AiCameraPageState extends State<AiCameraPage>
   bool _isDisposed = false;
 
   // ============================================================
+  // LỊCH SỬ NHẬN DIỆN
+  // ============================================================
+
+  final HistoryService _historyService =
+      HistoryService();
+
+  // Biển báo cuối cùng đã lưu
+  String? _lastSavedSign;
+
+  // Thời gian lưu gần nhất
+  DateTime? _lastSavedTime;
+
+  // Khoảng thời gian chống lưu trùng
+  static const Duration historyCooldown =
+      Duration(seconds: 8);
+
+  // ============================================================
   // FASTAPI
   // ============================================================
 
@@ -44,14 +64,7 @@ class _AiCameraPageState extends State<AiCameraPage>
   // ============================================================
   // NGƯỠNG CONFIDENCE
   // ============================================================
-  //
-  // Chỉ xác nhận biển báo khi AI có confidence >= 50%.
-  //
-  // Ví dụ:
-  // 0.0352 = 3.52%  -> KHÔNG nhận
-  // 0.50   = 50%    -> NHẬN
-  // 0.531  = 53.1%  -> NHẬN
-  //
+
   static const double minConfidence = 0.50;
 
   // ============================================================
@@ -98,7 +111,8 @@ class _AiCameraPageState extends State<AiCameraPage>
       }
 
       // Ưu tiên camera sau
-      CameraDescription selectedCamera = cameras.first;
+      CameraDescription selectedCamera =
+          cameras.first;
 
       for (final camera in cameras) {
         if (camera.lensDirection ==
@@ -137,7 +151,6 @@ class _AiCameraPageState extends State<AiCameraPage>
             : 'Camera sẵn sàng';
       });
 
-      // Nếu trước đó đang quét
       if (_wasScanningBeforeBackground &&
           !_isScanning) {
         _startScanning();
@@ -189,7 +202,6 @@ class _AiCameraPageState extends State<AiCameraPage>
       },
     );
 
-    // Quét ngay frame đầu tiên
     _scanFrame();
   }
 
@@ -208,8 +220,6 @@ class _AiCameraPageState extends State<AiCameraPage>
       return;
     }
 
-    // Không gửi request mới khi request trước
-    // chưa xử lý xong
     if (_isProcessing) {
       return;
     }
@@ -270,10 +280,6 @@ class _AiCameraPageState extends State<AiCameraPage>
       final responseBody =
           await response.stream.bytesToString();
 
-      // ======================================================
-      // DEBUG
-      // ======================================================
-
       debugPrint(
         '====================================',
       );
@@ -308,8 +314,7 @@ class _AiCameraPageState extends State<AiCameraPage>
       // PARSE JSON
       // ======================================================
 
-      final data =
-          jsonDecode(responseBody);
+      final data = jsonDecode(responseBody);
 
       if (data['success'] != true) {
         if (mounted) {
@@ -357,8 +362,6 @@ class _AiCameraPageState extends State<AiCameraPage>
       // ======================================================
       // TÌM BIỂN GIỚI HẠN TỐC ĐỘ
       //
-      // CLASS:
-      //
       // 50 = 40 km/h
       // 51 = 50 km/h
       // 52 = 60 km/h
@@ -392,19 +395,16 @@ class _AiCameraPageState extends State<AiCameraPage>
           final double confidence =
               (confidenceValue as num).toDouble();
 
-          // Chỉ xét 4 class biển tốc độ
           if (classId < 50 ||
               classId > 53) {
             continue;
           }
 
-          // Confidence phải >= 50%
           if (confidence <
               minConfidence) {
             continue;
           }
 
-          // Chọn detection có confidence cao nhất
           if (bestSpeedDetection == null) {
             bestSpeedDetection =
                 Map<String, dynamic>.from(
@@ -443,6 +443,10 @@ class _AiCameraPageState extends State<AiCameraPage>
                     as num)
                 .toDouble();
 
+        final String signName =
+            bestSpeedDetection!['name'] ??
+            'toc_do_toi_da';
+
         String speed = '';
 
         switch (classId) {
@@ -462,6 +466,9 @@ class _AiCameraPageState extends State<AiCameraPage>
             speed = '80';
             break;
         }
+
+        final String displayName =
+            'BIỂN GIỚI HẠN $speed KM/H';
 
         debugPrint(
           '====================================',
@@ -491,8 +498,7 @@ class _AiCameraPageState extends State<AiCameraPage>
 
         if (mounted) {
           setState(() {
-            _detectedSign =
-                'BIỂN GIỚI HẠN $speed KM/H';
+            _detectedSign = displayName;
 
             _confidence = confidence;
 
@@ -502,14 +508,21 @@ class _AiCameraPageState extends State<AiCameraPage>
           });
         }
 
+        // ====================================================
+        // LƯU LỊCH SỬ FIRESTORE + GPS
+        // ====================================================
+
+        await _saveDetectionHistory(
+          signName: signName,
+          displayName: displayName,
+          confidence: confidence,
+        );
+
         return;
       }
 
       // ======================================================
       // KHÔNG CÓ BIỂN TỐC ĐỘ ĐỦ CONFIDENCE
-      //
-      // Lúc này KHÔNG được lấy class 51 confidence 1-3%
-      // để báo biển 50 nữa.
       // ======================================================
 
       Map<String, dynamic>? bestDetection;
@@ -528,10 +541,8 @@ class _AiCameraPageState extends State<AiCameraPage>
           }
 
           final double confidence =
-              (confidenceValue as num)
-                  .toDouble();
+              (confidenceValue as num).toDouble();
 
-          // Chỉ lấy detection đủ tin cậy
           if (confidence <
               minConfidence) {
             continue;
@@ -573,6 +584,9 @@ class _AiCameraPageState extends State<AiCameraPage>
                     as num)
                 .toDouble();
 
+        final String displayName =
+            _convertSignName(name);
+
         debugPrint(
           '====================================',
         );
@@ -597,7 +611,7 @@ class _AiCameraPageState extends State<AiCameraPage>
         if (mounted) {
           setState(() {
             _detectedSign =
-                _convertSignName(name);
+                displayName;
 
             _confidence = confidence;
 
@@ -605,6 +619,16 @@ class _AiCameraPageState extends State<AiCameraPage>
                 'Đã nhận diện biển báo';
           });
         }
+
+        // ====================================================
+        // LƯU LỊCH SỬ FIRESTORE + GPS
+        // ====================================================
+
+        await _saveDetectionHistory(
+          signName: name,
+          displayName: displayName,
+          confidence: confidence,
+        );
 
         return;
       }
@@ -650,6 +674,292 @@ class _AiCameraPageState extends State<AiCameraPage>
     } finally {
       _isProcessing = false;
     }
+  }
+
+  // ============================================================
+  // LẤY GPS HIỆN TẠI
+  // ============================================================
+
+  Future<Position?> _getCurrentPosition() async {
+    try {
+      // Kiểm tra GPS có đang bật không
+      final bool serviceEnabled =
+          await Geolocator.isLocationServiceEnabled();
+
+      if (!serviceEnabled) {
+        debugPrint(
+          '⚠️ GPS đang tắt',
+        );
+
+        return null;
+      }
+
+      // Kiểm tra quyền vị trí
+      LocationPermission permission =
+          await Geolocator.checkPermission();
+
+      if (permission ==
+          LocationPermission.denied) {
+        permission =
+            await Geolocator.requestPermission();
+      }
+
+      if (permission ==
+              LocationPermission.denied ||
+          permission ==
+              LocationPermission.deniedForever) {
+        debugPrint(
+          '⚠️ Chưa được cấp quyền GPS',
+        );
+
+        return null;
+      }
+
+      // Lấy vị trí hiện tại
+      final Position position =
+          await Geolocator.getCurrentPosition(
+        locationSettings:
+            const LocationSettings(
+          accuracy:
+              LocationAccuracy.high,
+        ),
+      );
+
+      debugPrint(
+        '📍 GPS nhận diện: '
+        '${position.latitude}, '
+        '${position.longitude}',
+      );
+
+      return position;
+    } catch (e) {
+      debugPrint(
+        '❌ GPS Error: $e',
+      );
+
+      return null;
+    }
+  }
+
+  // ============================================================
+  // LƯU LỊCH SỬ NHẬN DIỆN
+  // ============================================================
+
+  Future<void> _saveDetectionHistory({
+    required String signName,
+    required String displayName,
+    required double confidence,
+  }) async {
+    final now = DateTime.now();
+
+    // ==========================================================
+    // CHỐNG LƯU TRÙNG
+    // ==========================================================
+
+    if (_lastSavedSign == signName &&
+        _lastSavedTime != null &&
+        now.difference(_lastSavedTime!) <
+            historyCooldown) {
+      debugPrint(
+        'Bỏ qua lưu trùng: $displayName',
+      );
+
+      return;
+    }
+
+    // ==========================================================
+    // TẠO NỘI DUNG CẢNH BÁO
+    // ==========================================================
+
+    String warning = '';
+
+    switch (signName) {
+      case 'toc_do_toi_da_40':
+        warning =
+            'Cảnh báo: Khu vực giới hạn tốc độ 40 km/h';
+        break;
+
+      case 'toc_do_toi_da_50':
+        warning =
+            'Cảnh báo: Khu vực giới hạn tốc độ 50 km/h';
+        break;
+
+      case 'toc_do_toi_da_60':
+        warning =
+            'Cảnh báo: Khu vực giới hạn tốc độ 60 km/h';
+        break;
+
+      case 'toc_do_toi_da_80':
+        warning =
+            'Cảnh báo: Khu vực giới hạn tốc độ 80 km/h';
+        break;
+
+      case 'cam_do_xe':
+        warning =
+            'Cảnh báo: Khu vực cấm đỗ xe';
+        break;
+
+      case 'cam_dung_xe_va_do_xe':
+        warning =
+            'Cảnh báo: Khu vực cấm dừng và đỗ xe';
+        break;
+
+      case 'cam_o_to':
+        warning =
+            'Cảnh báo: Khu vực cấm ô tô';
+        break;
+
+      case 'cam_re_trai':
+        warning =
+            'Cảnh báo: Cấm rẽ trái';
+        break;
+
+      case 'cam_re_phai':
+        warning =
+            'Cảnh báo: Cấm rẽ phải';
+        break;
+
+      case 'cam_quay_dau_xe':
+        warning =
+            'Cảnh báo: Cấm quay đầu xe';
+        break;
+
+      case 'cam_vuot':
+        warning =
+            'Cảnh báo: Cấm vượt';
+        break;
+
+      case 'cam_xe_di_nguoc_chieu':
+        warning =
+            'Cảnh báo: Cấm xe đi ngược chiều';
+        break;
+
+      case 'di_cham':
+        warning =
+            'Cảnh báo: Vui lòng đi chậm';
+        break;
+
+      case 'cong_truong':
+        warning =
+            'Cảnh báo: Phía trước có công trường';
+        break;
+
+      case 'chu_y_tre_em':
+        warning =
+            'Cảnh báo: Chú ý trẻ em';
+        break;
+
+      case 'chu_y_nguoi_di_bo_cat_ngang':
+        warning =
+            'Cảnh báo: Chú ý người đi bộ';
+        break;
+
+      case 'chu_y_nguoi_di_xe_dap_cat_ngang':
+        warning =
+            'Cảnh báo: Chú ý người đi xe đạp';
+        break;
+
+      case 'cho_ngoat_nguy_hiem_ben_phai':
+        warning =
+            'Cảnh báo: Có chỗ ngoặt nguy hiểm bên phải';
+        break;
+
+      case 'cho_ngoat_nguy_hiem_ben_trai':
+        warning =
+            'Cảnh báo: Có chỗ ngoặt nguy hiểm bên trái';
+        break;
+
+      case 'cho_ngoat_nguy_hiem_lien_tiep':
+        warning =
+            'Cảnh báo: Có nhiều chỗ ngoặt nguy hiểm liên tiếp';
+        break;
+
+      case 'nguy_hiem_khac':
+        warning =
+            'Cảnh báo: Khu vực nguy hiểm';
+        break;
+
+      case 'duong_uu_tien':
+        warning =
+            'Thông báo: Bạn đang đi trên đường ưu tiên';
+        break;
+
+      case 'duong_het_uu_tien':
+        warning =
+            'Thông báo: Hết đường ưu tiên';
+        break;
+
+      case 'duong_mot_chieu':
+        warning =
+            'Cảnh báo: Đường một chiều';
+        break;
+
+      case 'duong_nguoi_di_bo_sang_ngang':
+        warning =
+            'Cảnh báo: Chú ý người đi bộ sang ngang';
+        break;
+
+      case 'duong_cho_nguoi_di_bo':
+        warning =
+            'Thông báo: Đường dành cho người đi bộ';
+        break;
+
+      case 'duong_cho_xe_o_to':
+        warning =
+            'Thông báo: Đường dành cho ô tô';
+        break;
+
+      default:
+        warning =
+            'Đã nhận diện biển báo giao thông';
+    }
+
+    // ==========================================================
+    // LẤY GPS
+    // ==========================================================
+
+    final Position? position =
+        await _getCurrentPosition();
+
+    final double? latitude =
+        position?.latitude;
+
+    final double? longitude =
+        position?.longitude;
+
+    if (latitude != null &&
+        longitude != null) {
+      debugPrint(
+        '📍 Lưu lịch sử tại: '
+        '$latitude, $longitude',
+      );
+    } else {
+      debugPrint(
+        '⚠️ Không lấy được GPS, '
+        'lịch sử sẽ lưu latitude/longitude = null',
+      );
+    }
+
+    // ==========================================================
+    // LƯU VÀO FIRESTORE
+    // ==========================================================
+
+    await _historyService.saveHistory(
+      signName: signName,
+      displayName: displayName,
+      confidence: confidence,
+      warning: warning,
+      latitude: latitude,
+      longitude: longitude,
+    );
+
+    // Chỉ cập nhật trạng thái sau khi lưu
+    _lastSavedSign = signName;
+    _lastSavedTime = now;
+
+    debugPrint(
+      '✅ Đã lưu lịch sử nhận diện: $displayName',
+    );
   }
 
   // ============================================================

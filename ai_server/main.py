@@ -64,6 +64,22 @@ print("======================================")
 
 
 # =========================================================
+# SPEED LIMIT CONFIGURATION
+# =========================================================
+
+# Class ID của các biển giới hạn tốc độ
+SPEED_LIMIT_CLASSES = {
+    50: 40,
+    51: 50,
+    52: 60,
+    53: 80
+}
+
+# Confidence tối thiểu để công nhận biển báo
+SPEED_LIMIT_MIN_CONFIDENCE = 0.50
+
+
+# =========================================================
 # HEALTH CHECK
 # =========================================================
 
@@ -160,7 +176,7 @@ async def predict(
             # Giữ thấp để model có cơ hội phát hiện
             conf=0.001,
 
-            # Tăng kích thước ảnh để hỗ trợ biển nhỏ
+            # Kích thước ảnh
             imgsz=640,
 
             # IoU cho NMS
@@ -223,33 +239,39 @@ async def predict(
 
 
     # =====================================================
-    # 6. TÌM BIỂN TỐC ĐỘ TỐI ĐA 50 KM/H
+    # 6. TÌM BIỂN GIỚI HẠN TỐC ĐỘ
     # =====================================================
 
-    SPEED_50_CLASS_ID = 51
-
-    SPEED_50_MIN_CONFIDENCE = 0.50
-
-    speed_50 = None
+    speed_limit = None
 
     for detection in detections:
 
+        class_id = detection["class_id"]
+
+        confidence = detection["confidence"]
+
         if (
-            detection["class_id"] == SPEED_50_CLASS_ID
+            class_id in SPEED_LIMIT_CLASSES
             and
-            detection["confidence"] >= SPEED_50_MIN_CONFIDENCE
+            confidence >= SPEED_LIMIT_MIN_CONFIDENCE
         ):
 
-            speed_50 = detection
+            speed_limit = {
+                "class_id": class_id,
+                "name": detection["name"],
+                "speed": SPEED_LIMIT_CLASSES[class_id],
+                "confidence": confidence,
+                "bbox": detection["bbox"]
+            }
 
             break
 
 
     # =====================================================
-    # 7. TRẠNG THÁI BIỂN 50
+    # 7. TRẠNG THÁI BIỂN GIỚI HẠN TỐC ĐỘ
     # =====================================================
 
-    detected_speed_50 = speed_50 is not None
+    detected_speed_limit = speed_limit is not None
 
 
     # =====================================================
@@ -262,12 +284,16 @@ async def predict(
 
         "filename": file.filename,
 
-        "detected_speed_50": detected_speed_50,
+        # Có phát hiện biển giới hạn tốc độ hay không
+        "detected_speed_limit": detected_speed_limit,
 
-        "speed_50": speed_50,
+        # Thông tin biển tốc độ
+        "speed_limit": speed_limit,
 
+        # Tất cả detection của YOLO
         "detections": detections,
 
+        # Số lượng detection
         "count": len(detections)
     }
 
